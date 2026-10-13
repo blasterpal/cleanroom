@@ -1,0 +1,17 @@
+*
+!Dockerfile
+!browser/
+!browser/package.json
+!browser/package-lock.json
+!browser/cdp.mjs
+!scripts/
+!scripts/entrypoint.sh
+!config/
+!config/opencode.json
+!vendor/
+!vendor/skills/**
+!vendor/MATT-POCOCK-LICENSE
+.env
+.env.*
+**/.git
+**/node_modules

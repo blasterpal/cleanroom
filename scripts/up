@@ -1,0 +1,50 @@
+#!/bin/sh
+# Start the cleanroom stack, injecting the OpenRouter key from 1Password.
+# Requires: 1Password desktop app + Settings -> Developer -> "Integrate with 1Password CLI".
+# The key is cached for 1 hour in ~/.cache/cleanroom/ so repeated starts skip op.
+set -eu
+cd "$(dirname "$0")/.."
+
+: "${OPENROUTER_OP_REF:?set OPENROUTER_OP_REF, e.g. op://Vault/Item/field}"
+OP_REF="$OPENROUTER_OP_REF"
+CACHE="${OPENROUTER_KEY_CACHE:-$HOME/.cache/cleanroom/openrouter-api-key}"
+CACHE_TTL="${OPENROUTER_KEY_CACHE_TTL:-3600}"
+if [ -n "${OP_ACCOUNT:-}" ]; then export OP_ACCOUNT; fi
+
+key=""
+if [ -f "$CACHE" ]; then
+  age=$(( $(date +%s) - $(stat -f %m "$CACHE") ))
+  if [ "$age" -lt "$CACHE_TTL" ]; then
+    key=$(cat "$CACHE")
+  fi
+fi
+
+if [ -z "$key" ]; then
+  if ! command -v op >/dev/null 2>&1; then
+    echo "1Password CLI (op) is not installed and the key cache is empty/stale." >&2
+    exit 1
+  fi
+  if ! key=$(op read "$OP_REF" 2>&1); then
+    echo "Could not read '$OP_REF' from 1Password:" >&2
+    echo "  $key" >&2
+    echo "Run 'op read \"$OP_REF\"' in a terminal to authorize (Touch ID), then retry." >&2
+    echo "Override the reference with OPENROUTER_OP_REF if needed." >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$CACHE")"
+  ( umask 177; printf '%s' "$key" > "$CACHE" )
+  echo "Key cached at $CACHE (valid ${CACHE_TTL}s)."
+fi
+
+# Create .env from the template if missing, then set/replace the OpenRouter line.
+if [ ! -f .env ]; then
+  cp .env.example .env
+fi
+tmp=.env.tmp.$$
+sed "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=$key|" .env > "$tmp"
+grep -q '^OPENROUTER_API_KEY=' "$tmp" || printf 'OPENROUTER_API_KEY=%s\n' "$key" >> "$tmp"
+chmod 600 "$tmp"
+mv "$tmp" .env
+
+docker compose up -d "$@"
+echo "cleanroom is up. OpenRouter key injected from 1Password ($OP_REF)."

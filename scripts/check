@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+docker compose config --quiet
+docker compose up -d dev >/dev/null
+docker compose exec -T dev sh -eu -c '
+  test "$(id -u)" != 0
+  ruby --version
+  rails --version
+  node --version
+  opencode --version
+  herdr --version
+  tmux -V
+  git --version
+  python3 --version
+  herdr integration status
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT current_database();"
+  psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT current_database();"
+  node /opt/browser/cdp.mjs status
+  opencode debug skill > /tmp/opencode-skills.json
+  jq -e "length >= 39" /tmp/opencode-skills.json
+  jq -r ".[].name" /tmp/opencode-skills.json | rg "^herdr$"
+'

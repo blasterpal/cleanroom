@@ -1,0 +1,17 @@
+# Secrets — injected by Compose at runtime only
+.env
+.env.*
+!.env.example
+
+# App workspace artifacts
+app/tmp/
+app/log/
+app/node_modules/
+app/vendor/bundle/
+
+# Local drop folders — symlinked out of the repo (see README)
+/data
+/blind_data
+
+# OS noise
+.DS_Store

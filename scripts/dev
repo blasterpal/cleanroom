@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+if [ ! -f .env ]; then
+  echo 'Create .env via scripts/up (injects the OpenRouter key from 1Password) or from .env.example.' >&2
+  exit 1
+fi
+docker compose up -d dev >/dev/null
+# This compose version panics on exec without a console; use -T when non-interactive.
+tty_flag=
+if [ ! -t 0 ] || [ ! -t 1 ]; then
+  tty_flag=-T
+fi
+if [ "$#" -eq 0 ]; then
+  exec docker compose exec $tty_flag dev opencode
+fi
+exec docker compose exec $tty_flag dev "$@"

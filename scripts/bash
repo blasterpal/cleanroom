@@ -1,0 +1,6 @@
+#!/bin/sh
+# Bash into the running cleanroom dev container (starts the stack first).
+set -eu
+cd "$(dirname "$0")/.."
+docker compose up -d dev >/dev/null 2>&1 || ./scripts/up >/dev/null
+exec docker compose exec -w /workspace dev bash
