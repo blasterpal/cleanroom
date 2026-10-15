@@ -1,0 +1,116 @@
+#!/bin/sh
+set -eu
+
+resolve_self() {
+  source=$1
+  while [ -L "$source" ]; do
+    source_dir=$(CDPATH= cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)
+    link=$(readlink "$source")
+    case "$link" in
+      /*) source=$link ;;
+      *) source=$source_dir/$link ;;
+    esac
+  done
+  CDPATH= cd -P "$(dirname "$source")" >/dev/null 2>&1 && printf '%s/%s\n' "$(pwd)" "$(basename "$source")"
+}
+
+SELF=$(resolve_self "$0")
+ROOT=$(CDPATH= cd -P "$(dirname "$SELF")/.." >/dev/null 2>&1 && pwd)
+IMAGE=${CLEANROOM_IMAGE:-cleanroom:local}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cleanroom          Open Bash with the current directory mounted at /workspace
+  cleanroom build    Build or refresh the Cleanroom image
+  cleanroom install  Install the cleanroom command in ~/.local/bin
+  cleanroom --help   Show this help
+
+Set CLEANROOM_IMAGE to override the Docker image tag.
+EOF
+}
+
+install_cli() {
+  install_dir=${CLEANROOM_BIN_DIR:-$HOME/.local/bin}
+  destination=$install_dir/cleanroom
+  mkdir -p "$install_dir"
+  if [ -L "$destination" ]; then
+    existing=$(readlink "$destination")
+    if [ "$existing" = "$SELF" ]; then
+      echo "cleanroom is already installed at $destination"
+      return
+    fi
+    echo "Refusing to replace existing symlink: $destination -> $existing" >&2
+    exit 1
+  elif [ -e "$destination" ]; then
+    echo "Refusing to replace existing file: $destination" >&2
+    exit 1
+  fi
+  ln -s "$SELF" "$destination"
+  echo "Installed cleanroom at $destination"
+  case ":${PATH:-}:" in
+    *":$install_dir:"*) ;;
+    *) echo "Add $install_dir to PATH to run 'cleanroom' by name." ;;
+  esac
+}
+
+build_image() {
+  docker build --tag "$IMAGE" "$ROOT"
+}
+
+case "${1:-}" in
+  install)
+    [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+    install_cli
+    exit 0
+    ;;
+  build)
+    [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+    docker info >/dev/null 2>&1 || {
+      echo "Docker is not running. Start Docker Desktop and retry." >&2
+      exit 1
+    }
+    build_image
+    exit 0
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  "") ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+docker info >/dev/null 2>&1 || {
+  echo "Docker is not running. Start Docker Desktop and retry." >&2
+  exit 1
+}
+
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "Building $IMAGE on first use..." >&2
+  build_image
+fi
+
+workspace=$(pwd -P)
+set -- docker run --rm --init --interactive \
+  --workdir /workspace \
+  --mount "type=bind,source=$workspace,target=/workspace" \
+  --mount "type=volume,source=cleanroom-cli-opencode-config,target=/home/dev/.config/opencode" \
+  --mount "type=volume,source=cleanroom-cli-opencode-data,target=/home/dev/.local/share" \
+  --mount "type=volume,source=cleanroom-cli-opencode-state,target=/home/dev/.local/state" \
+  --mount "type=volume,source=cleanroom-cli-cache,target=/home/dev/.cache" \
+  --mount "type=volume,source=cleanroom-cli-gems,target=/home/dev/bundle" \
+  --mount "type=volume,source=cleanroom-cli-herdr-config,target=/home/dev/.config/herdr"
+
+if [ -t 0 ] && [ -t 1 ]; then
+  set -- "$@" --tty
+fi
+
+if [ -f "$ROOT/.env" ]; then
+  set -- "$@" --env-file "$ROOT/.env"
+fi
+
+exec "$@" "$IMAGE" bash

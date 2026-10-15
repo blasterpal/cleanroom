@@ -22,13 +22,14 @@ container-local, separate from any host Herdr session. Start `herdr` from an
 interactive shell, then start OpenCode in its pane; `herdr --skill` describes its
 controls.
 
-`DATABASE_URL` points to the local development PostgreSQL service.
-`TEST_DATABASE_URL` points to `app_test`; configure the Rails test environment to
-use it rather than accidentally reusing the development URL. Bind the Rails
-server to `0.0.0.0:3000` for host access at `http://127.0.0.1:13000` (or the
-configured host port). `/data` and `/blind_data` are shared drop folders (the `data/` and `blind_data/`
-symlinks in the repo) for files supplied for evals and testing; treat them as
-provided input, not part of the app source.
+The local PostgreSQL service is temporarily disabled in Compose. Do not assume
+`DATABASE_URL` or `TEST_DATABASE_URL` is configured; database-dependent app/test
+runs need an explicitly supplied external database or restoration of the Compose
+service. Bind the Rails server to `0.0.0.0:3000` for host access at
+`http://127.0.0.1:13000` (or the configured host port). `/data` and
+`/blind_data` are shared drop folders (the `data/` and `blind_data/` symlinks in
+the repo) for files supplied for evals and testing; treat them as provided input,
+not part of the app source.
 
 ## Host browser
 

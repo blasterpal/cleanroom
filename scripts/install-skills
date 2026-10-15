@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+
+# Install the latest upstream pack into Cleanroom's persistent OpenCode skill
+# directory, not the mounted application workspace.
+docker compose exec -T dev sh -eu -c '
+  cd /home/dev
+  npx --yes skills@latest add mattpocock/skills \
+    --skill "*" --agent opencode --global --copy --yes
+'

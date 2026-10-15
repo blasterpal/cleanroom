@@ -30,6 +30,7 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash dev \
 COPY --chown=dev:dev config/opencode.json /home/dev/.config/opencode/opencode.json
 COPY --chown=dev:dev vendor/skills/ /home/dev/.config/opencode/skills/
 COPY --chown=dev:dev vendor/MATT-POCOCK-LICENSE /home/dev/.config/opencode/skills/MATT-POCOCK-LICENSE
+COPY vendor/skills.lock.json /opt/cleanroom/skills.lock.json
 COPY scripts/entrypoint.sh /usr/local/bin/dev-entrypoint
 RUN chmod 755 /usr/local/bin/dev-entrypoint \
     && mkdir -p /opt/cleanroom/seed && chown dev:dev /opt/cleanroom/seed

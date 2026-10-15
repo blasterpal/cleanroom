@@ -15,8 +15,9 @@ changing your host setup. One use case is building a fresh application from a
 standalone specification, without supplying the original implementation or the
 specification author's research. Keep those materials out of the mounted inputs.
 
-The current setup includes OpenCode, Herdr, tmux, Git, Ruby/Rails, Python,
-PostgreSQL, a vendored Matt Pocock skill snapshot, and a browser-testing helper.
+The current setup includes OpenCode, Herdr, tmux, Git, Ruby/Rails, Python, the
+PostgreSQL client, a vendored Matt Pocock skill snapshot, and a browser-testing
+helper. The PostgreSQL server is temporarily disabled.
 It is a development environment, not an agent framework or hosted service.
 
 ## Isolation limits
@@ -44,7 +45,9 @@ mounted. Only supply material and credentials you intend the agent to access.
 | `spec/` | Input specification, mounted read-only at `/spec` (place the agreed spec at `spec/spec.md`) |
 | `data/` | Shared drop folder, mounted writable at `/data`; **outside Git** (see below) |
 | `blind_data/` | Second drop folder, mounted writable at `/blind_data`; **outside Git** |
-| `scripts/` | `up`, `dev`, `bash`, `check`, `browser-check`, `entrypoint.sh` |
+| `setup.sh` | Installs the host `cleanroom` command and builds its image |
+| `bin/` | Host-side `cleanroom` CLI |
+| `scripts/` | `up`, `dev`, `bash`, `check`, `browser-check`, `install-skills`, `entrypoint.sh` |
 | `browser/` | CDP helper (`cdp.mjs`) |
 | `config/` | The container's global OpenCode config |
 | `vendor/` | Vendored skill snapshot (with upstream license) |
@@ -78,6 +81,28 @@ The current host workflow targets macOS with Docker Desktop and Docker Compose.
 Keep the checkout outside Dropbox or other synced folders. The helper scripts
 use a macOS file timestamp command when checking the credential cache.
 
+### Bash in any workspace
+
+With Docker Desktop running, run setup once from this checkout:
+
+```sh
+./setup.sh
+cd /path/to/workspace
+cleanroom
+```
+
+`setup.sh` installs the command in `~/.local/bin` and builds the image. If that
+directory is not on `PATH`, add it before running `cleanroom`. The CLI opens
+Bash with the current directory mounted read/write at `/workspace`; type
+`opencode` inside the container to start OpenCode. Run `cleanroom build` after
+changing the image, OpenCode config, or vendored skills.
+
+OpenCode config and the complete pinned Matt Pocock skill pack are seeded into
+persistent Docker volumes. The CLI also keeps OpenCode state, caches, gems, and
+Herdr config in volumes shared across workspaces. If this checkout has a `.env`,
+its runtime variables are passed to the container, but the file is not mounted.
+The current workspace is the only host directory mounted by the CLI.
+
 ### With 1Password
 
 Install the `op` CLI and enable the desktop app's CLI integration (Settings →
@@ -87,6 +112,7 @@ Developer → "Integrate with 1Password CLI"). Set your own secret reference:
 export OPENROUTER_OP_REF='op://Vault/Item/field'
 docker compose build
 ./scripts/up      # injects OPENROUTER_API_KEY from 1Password and starts the stack
+./scripts/install-skills  # refreshes the OpenCode skill pack from upstream
 ./scripts/dev     # OpenCode TUI in the dev container
 ```
 
@@ -111,6 +137,7 @@ chmod 600 .env
 # Edit .env locally to set OPENROUTER_API_KEY. Do not commit it.
 docker compose build
 docker compose up -d
+./scripts/install-skills
 ./scripts/dev
 ```
 
@@ -122,6 +149,12 @@ Further scripts: `./scripts/dev bash` (dev shell), `./scripts/dev herdr`
 `./scripts/browser-check` (loads a container page in the host browser, then
 closes its QA tab).
 
+`./scripts/install-skills` installs the latest `mattpocock/skills` pack for
+OpenCode into the persistent global skill directory. It uses copy mode so the
+skills remain inside Cleanroom's mounted OpenCode config, and does not add files
+to the mounted `app/` workspace. The image's pinned vendored skills remain the
+offline baseline; this script is an explicit, network-dependent refresh.
+
 ## Specification-driven builds and database
 
 The default instructions in `app/AGENTS.md` describe a Rails/PostgreSQL builder
@@ -130,11 +163,12 @@ build, or adapt those instructions for a different harness experiment.
 
 The Rails app lives in `app/` (`/workspace`); scaffold with
 `rails new . --database=postgresql`. Bind the server to `0.0.0.0:3000`; it is
-published at `http://127.0.0.1:13000` (`RAILS_HOST_PORT` in `.env`). PostgreSQL
-is reachable only on the Compose network, holds `app_development` and
-`app_test`, and has development-only credentials. Point tests at
-`TEST_DATABASE_URL`; the default `DATABASE_URL` targets development. Gems
-persist in a Docker volume.
+published at `http://127.0.0.1:13000` (`RAILS_HOST_PORT` in `.env`). The local
+PostgreSQL server is temporarily removed from Compose, so no local database URLs
+are configured and database-dependent app/test runs need an explicitly supplied
+external database or restoration of the Compose service. The existing Postgres
+Docker volume is left untouched but is not mounted. Gems persist in a Docker
+volume.
 
 ## Browser testing
 
@@ -151,10 +185,12 @@ the host browser or expose its CDP port.
 
 ## Persistence and stopping
 
-Sessions, caches, gems, Herdr state and database files persist in Docker named
-volumes outside any synced folder. `docker compose down` stops the stack and
-keeps the volumes; `docker compose down -v` deletes them. No Docker socket, host
-home directory, or browser profile is mounted.
+Sessions, caches, gems and Herdr state persist in Docker named volumes outside
+any synced folder. The existing Postgres data volume is also retained, but the
+current Compose configuration does not mount it. `docker compose down` stops the
+stack and keeps its volumes; `docker compose down -v` deletes the volumes declared
+in the current Compose configuration. No Docker socket, host home directory, or
+browser profile is mounted.
 
 ## Before publishing your own checkout
 

@@ -14,10 +14,11 @@ docker compose exec -T dev sh -eu -c '
   git --version
   python3 --version
   herdr integration status
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT current_database();"
-  psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT current_database();"
   node /opt/browser/cdp.mjs status
   opencode debug skill > /tmp/opencode-skills.json
-  jq -e "length >= 39" /tmp/opencode-skills.json
+  jq -r ".paths[] | split(\"/\")[-1]" /opt/cleanroom/skills.lock.json |
+    while IFS= read -r skill; do
+      jq -e --arg skill "$skill" "any(.[]; .name == \$skill)" /tmp/opencode-skills.json >/dev/null
+    done
   jq -r ".[].name" /tmp/opencode-skills.json | rg "^herdr$"
 '
