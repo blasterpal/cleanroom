@@ -18,7 +18,10 @@ class AuthenticationTests(unittest.TestCase):
         for name in ('OPENROUTER_API_KEY', 'CLEANROOM_ENV_FILE'):
             self.env.pop(name, None)
         self.env['HOME'] = str(self.base / 'home')
-        self.env['XDG_DATA_HOME'] = str(self.base / 'data')
+        self.env['XDG_DATA_HOME'] = str(self.base / 'storage/data')
+        self.env['XDG_CACHE_HOME'] = str(self.base / 'storage/cache')
+        self.context = self.base / 'context'
+        self.context.mkdir()
 
     def entrypoint(self, key=None):
         if key is not None:
@@ -27,7 +30,7 @@ class AuthenticationTests(unittest.TestCase):
                               env=self.env, capture_output=True, text=True)
 
     def test_seed_merge_permissions_and_empty_key(self):
-        auth = self.base / 'data/opencode/auth.json'
+        auth = self.base / 'storage/data/opencode/auth.json'
         auth.parent.mkdir(parents=True)
         auth.write_text('{"other":{"type":"api","key":"other-fixture"}}')
         key = 'fixture-"quoted"-\\-key'
@@ -55,7 +58,7 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(auth.stat().st_mode & 0o777, 0o600)
 
     def test_invalid_auth_is_preserved_without_leaking_content(self):
-        auth = self.base / 'data/opencode/auth.json'
+        auth = self.base / 'storage/data/opencode/auth.json'
         auth.parent.mkdir(parents=True)
         auth.write_text('{"key":"private-fixture", broken')
         result = self.entrypoint('new-fixture')
@@ -69,22 +72,23 @@ class AuthenticationTests(unittest.TestCase):
         mock.mkdir(exist_ok=True)
         docker = mock / 'docker'
         docker.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
+                          'if sys.argv[1] == "volume": sys.exit(1)\n'
                           'if sys.argv[1] == "run":\n'
                           ' print(json.dumps({"args":sys.argv[1:], "inherited":bool(os.getenv("OPENROUTER_API_KEY"))}))\n')
         docker.chmod(0o755)
         self.env['PATH'] = str(mock) + os.pathsep + os.environ['PATH']
-        return subprocess.run([str(ROOT / 'bin/cleanroom'), *args], cwd=self.base,
+        return subprocess.run([str(ROOT / 'bin/cleanroom'), *args], cwd=self.context,
                               env=self.env, capture_output=True, text=True)
 
     def test_cwd_env_and_shell_override_without_secret_arguments(self):
-        (self.base / '.env').write_text('OPENROUTER_API_KEY=fixture-file-key\n')
+        (self.context / '.env').write_text('OPENROUTER_API_KEY=fixture-file-key\n')
         self.env['OPENROUTER_API_KEY'] = 'fixture-shell-key'
         result = self.cli('--name', 'test')
         self.assertEqual(result.returncode, 0)
         args = json.loads(result.stdout)['args']
-        self.assertEqual(args[args.index('--env-file') + 1], str(self.base / '.env'))
+        self.assertEqual(args[args.index('--env-file') + 1], str(self.context / '.env'))
         self.assertIn('OPENROUTER_API_KEY', args)
-        self.assertTrue(any('target=/workspace/.env' in a for a in args))
+        self.assertTrue(any('target=/context/.env' in a for a in args))
         self.assertNotIn('fixture-shell-key', result.stdout + result.stderr)
         self.assertNotIn('fixture-file-key', result.stdout + result.stderr)
 
@@ -92,22 +96,22 @@ class AuthenticationTests(unittest.TestCase):
         result = self.cli('--name', 'test')
         self.assertEqual(result.returncode, 0)
         self.assertNotIn('--env-file', json.loads(result.stdout)['args'])
-        (self.base / '.env').write_text('OPENROUTER_API_KEY=fixture-file-key\n')
+        (self.context / '.env').write_text('OPENROUTER_API_KEY=fixture-file-key\n')
         result = self.cli('--name', 'test')
         invocation = json.loads(result.stdout)
         self.assertEqual(invocation['args'][invocation['args'].index('--env-file') + 1],
-                         str(self.base / '.env'))
+                         str(self.context / '.env'))
         self.assertNotIn('OPENROUTER_API_KEY', invocation['args'])
         self.assertFalse(invocation['inherited'])
 
     def test_explicit_env_file_is_preserved_and_hidden(self):
-        selected = self.base / 'credentials.env'
+        selected = self.context / 'credentials.env'
         selected.write_text('OPENROUTER_API_KEY=fixture-selected-key\n')
         result = self.cli('--name', 'selected', '--env-file', str(selected))
         self.assertEqual(result.returncode, 0)
         args = json.loads(result.stdout)['args']
         self.assertEqual(args[args.index('--env-file') + 1], str(selected))
-        self.assertTrue(any('target=/workspace/credentials.env' in a for a in args))
+        self.assertTrue(any('target=/context/credentials.env' in a for a in args))
         self.assertNotEqual(self.cli('--name', 'selected', '--env-file', str(self.base / 'missing')).returncode, 0)
 
     def test_onepassword_exports_key_without_rewriting_env(self):
@@ -145,7 +149,7 @@ class AuthenticationTests(unittest.TestCase):
         results = [self.cli('--name', name) for name in ('a', 'b')]
         for result in results:
             self.assertEqual(result.returncode, 0)
-        mounts = [[a for a in json.loads(r.stdout)['args'] if 'type=volume' in a]
+        mounts = [[a for a in json.loads(r.stdout)['args'] if 'target=' in a]
                   for r in results]
         for target in ('/home/dev/.local/share', '/home/dev/.local/state', '/home/dev/.cache'):
             self.assertNotEqual(next(m for m in mounts[0] if 'target=' + target in m),
@@ -154,7 +158,35 @@ class AuthenticationTests(unittest.TestCase):
                          next(m for m in mounts[1] if 'target=/home/dev/.config/opencode' in m))
         resumed = self.cli('--name=a')
         self.assertEqual(json.loads(resumed.stdout)['args'], json.loads(results[0].stdout)['args'])
-        self.assertIn('source=cleanroom-cli-seat-a-opencode-data,target=', resumed.stdout)
+        self.assertIn(f'source={self.base}/storage/data/cleanroom/a/share,target=', resumed.stdout)
+
+    def test_context_is_readonly_and_only_named_directories_are_mounted(self):
+        result = self.cli('--name', 'a')
+        self.assertEqual(result.returncode, 0)
+        args = json.loads(result.stdout)['args']
+        self.assertIn(f'type=bind,source={self.context},target=/context,readonly', args)
+        for directory, target in (('workspace', '/workspace'), ('data', '/data'),
+                                  ('share', '/home/dev/.local/share'),
+                                  ('state', '/home/dev/.local/state'),
+                                  ('gems', '/home/dev/bundle'), ('herdr', '/home/dev/.config/herdr')):
+            source = self.base / 'storage/data/cleanroom/a' / directory
+            self.assertIn(f'type=bind,source={source},target={target}', args)
+            self.assertTrue(source.is_dir())
+            self.assertEqual(source.stat().st_mode & 0o777, 0o700)
+        self.assertIn(f'type=bind,source={self.base}/storage/cache/cleanroom/a,target=/home/dev/.cache', args)
+        self.assertFalse(any('cleanroom-cli-seat-' in arg for arg in args))
+
+    def test_context_cannot_expose_other_named_storage(self):
+        self.env['XDG_DATA_HOME'] = str(self.context / 'data')
+        result = self.cli('--name', 'a')
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn('"args"', result.stdout)
+
+    def test_named_storage_cannot_be_a_symlink_to_another_name(self):
+        parent = self.base / 'storage/data/cleanroom'
+        (parent / 'b').mkdir(parents=True)
+        (parent / 'a').symlink_to(parent / 'b', target_is_directory=True)
+        self.assertEqual(self.cli('--name', 'a').returncode, 2)
 
     def test_launch_requires_a_nonempty_name(self):
         for args in ((), ('--name',), ('--name=',), ('--name', ''),
@@ -175,7 +207,7 @@ class AuthenticationTests(unittest.TestCase):
                 result = self.cli('--name', raw)
                 self.assertEqual(result.returncode, 0)
                 args = json.loads(result.stdout)['args']
-                self.assertIn(f'type=volume,source=cleanroom-cli-seat-{normalized}-opencode-data,target=/home/dev/.local/share', args)
+                self.assertIn(f'type=bind,source={self.base}/storage/data/cleanroom/{normalized}/share,target=/home/dev/.local/share', args)
                 equivalent = self.cli('--name', normalized)
                 self.assertEqual(args, json.loads(equivalent.stdout)['args'])
 

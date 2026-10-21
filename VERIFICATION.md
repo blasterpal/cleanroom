@@ -50,3 +50,27 @@ A Docker check confirmed that a name containing spaces and punctuation reopens
 saved data through its normalized spelling, while another name cannot see that
 data. Shell syntax and whitespace checks passed. The image is unchanged by this
 host CLI update.
+
+## Named host storage and read-only context — 2026-10-21
+
+The CLI now mounts the launch directory read-only at `/context`. Each name gets
+host-backed work, output, OpenCode data/state, gems, and Herdr directories under
+`${XDG_DATA_HOME:-$HOME/.local/share}/cleanroom/<name>/`, plus its own cache under
+`${XDG_CACHE_HOME:-$HOME/.cache}/cleanroom/<name>/`. Only OpenCode config and skills
+remain in the shared Docker config volume. The Compose stack is unchanged.
+
+| Check | Result |
+|---|---|
+| Host regression suite | All 13 tests passed: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` |
+| Docker storage checks | Both passed: `PYTHONDONTWRITEBYTECODE=1 python3 tests/verify_storage.py -v` |
+| Context | Selected files readable; writes rejected; `.env` masked and key injected through environment |
+| Host files | Workspace and `/data` output visible on host; extra host context readable on restart |
+| Isolation and persistence | Work, output, state, and cache survived recreation; absent for another name |
+| Credentials | Auth seeded at the mounted XDG data path with mode 0600; no key in CLI/container output |
+| Legacy import | Data/state/cache imported once; modified host files preserved on restart; original volumes retained and unchanged |
+| Parent directory exposure | CLI rejects overlapping context/storage paths and symlinks for named storage directories |
+| Syntax | POSIX shell syntax and Git whitespace checks passed |
+
+These checks used temporary directories, unique names, fixture credentials, and
+no paid model calls. Test legacy volumes were removed afterward. The image and
+Compose services were not changed by this host CLI update.

@@ -21,13 +21,16 @@ IMAGE=${CLEANROOM_IMAGE:-cleanroom:local}
 usage() {
   cat <<'EOF'
 Usage:
-  cleanroom --name NAME  Open Bash with isolated auth and sessions for this name
+  cleanroom --name NAME  Open Bash with separate work and state for this name
   cleanroom --name NAME --env-file FILE  Use a local env file for credentials
   cleanroom build    Build or refresh the Cleanroom image
   cleanroom install  Install the cleanroom command in ~/.local/bin
   cleanroom --help   Show this help
 
-A name is required to launch. Reuse it to resume the same state.
+A name is required to launch. Reuse it to resume the same work and state.
+The current directory is read-only at /context. Write to /workspace or /data.
+Files are saved under ${XDG_DATA_HOME:-$HOME/.local/share}/cleanroom/NAME;
+caches are under ${XDG_CACHE_HOME:-$HOME/.cache}/cleanroom/NAME.
 Spaces and dashes become underscores; other special characters are removed.
 Set CLEANROOM_IMAGE to override the Docker image tag.
 By default, cleanroom uses .env in the current directory when it exists.
@@ -90,11 +93,11 @@ case "${1:-}" in
     ;;
 esac
 
-workspace=$(pwd -P)
+context=$(pwd -P)
 name=
 env_file=${CLEANROOM_ENV_FILE:-}
-if [ -z "$env_file" ] && [ -f "$workspace/.env" ]; then
-  env_file=$workspace/.env
+if [ -z "$env_file" ] && [ -f "$context/.env" ]; then
+  env_file=$context/.env
 fi
 
 while [ "$#" -gt 0 ]; do
@@ -161,20 +164,104 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   build_image
 fi
 
-# Keep the existing volume names so saved state remains available.
-data_volume=cleanroom-cli-seat-$name-opencode-data
-state_volume=cleanroom-cli-seat-$name-opencode-state
-cache_volume=cleanroom-cli-seat-$name-cache
+data_root=${XDG_DATA_HOME:-$HOME/.local/share}/cleanroom
+cache_root=${XDG_CACHE_HOME:-$HOME/.cache}/cleanroom
+case "$data_root:$cache_root" in
+  /*:/*) ;;
+  *) echo "XDG data and cache directories must be absolute paths." >&2; exit 2 ;;
+esac
+(umask 077; mkdir -p "$data_root" "$cache_root")
+data_root=$(CDPATH= cd -P "$data_root" && pwd)
+cache_root=$(CDPATH= cd -P "$cache_root" && pwd)
+if [ "$context" = / ]; then
+  echo "The filesystem root would expose Cleanroom storage. Choose a separate context directory." >&2
+  exit 2
+fi
+case "$data_root/" in
+  "$cache_root/"*)
+    echo "Cleanroom data and cache directories must not overlap." >&2
+    exit 2
+    ;;
+esac
+case "$cache_root/" in
+  "$data_root/"*)
+    echo "Cleanroom data and cache directories must not overlap." >&2
+    exit 2
+    ;;
+esac
+for storage_root in "$data_root" "$cache_root"; do
+  case "$storage_root/" in
+    "$context/"*)
+      echo "The current directory would expose Cleanroom storage. Choose a separate context directory." >&2
+      exit 2
+      ;;
+  esac
+  case "$context/" in
+    "$storage_root/"*)
+      echo "Cleanroom storage cannot be used as the context directory." >&2
+      exit 2
+      ;;
+  esac
+done
+session=$data_root/$name
+cache=$cache_root/$name
+for directory in "$session" "$cache"; do
+  if [ -L "$directory" ]; then
+    echo "Refusing a symlink for named Cleanroom storage." >&2
+    exit 2
+  fi
+done
+(umask 077; mkdir -p "$session")
+chmod 700 "$session"
+
+prepare_directory() {
+  destination=$1
+  legacy_volume=${2:-}
+  if [ -L "$destination" ]; then
+    echo "Refusing a symlink for named Cleanroom storage." >&2
+    exit 2
+  fi
+  if [ -d "$destination" ]; then
+    return
+  fi
+  if [ -n "$legacy_volume" ] && docker volume inspect "$legacy_volume" >/dev/null 2>&1; then
+    temporary=$(mktemp -d "$(dirname "$destination")/.cleanroom-import.XXXXXX")
+    if ! docker run --rm --network none --entrypoint sh \
+      --mount "type=volume,source=$legacy_volume,target=/source,readonly" \
+      --mount "type=bind,source=$temporary,target=/destination" \
+      "$IMAGE" -c 'cp -a /source/. /destination/'; then
+      rm -rf "$temporary"
+      echo "Could not import saved Cleanroom state; the original volume is untouched." >&2
+      exit 1
+    fi
+    chmod 700 "$temporary"
+    mv "$temporary" "$destination"
+  else
+    (umask 077; mkdir -p "$destination")
+  fi
+}
+
+prepare_directory "$session/workspace"
+prepare_directory "$session/data"
+prepare_directory "$session/share" "cleanroom-cli-seat-$name-opencode-data"
+prepare_directory "$session/state" "cleanroom-cli-seat-$name-opencode-state"
+prepare_directory "$cache" "cleanroom-cli-seat-$name-cache"
+prepare_directory "$session/gems"
+prepare_directory "$session/herdr"
+printf 'Cleanroom files: %s\n' "$session" >&2
+printf '%s\n' 'Context is read-only at /context; save work in /workspace or /data.' >&2
 
 set -- docker run --rm --init --interactive \
   --workdir /workspace \
-  --mount "type=bind,source=$workspace,target=/workspace" \
+  --mount "type=bind,source=$context,target=/context,readonly" \
+  --mount "type=bind,source=$session/workspace,target=/workspace" \
+  --mount "type=bind,source=$session/data,target=/data" \
   --mount "type=volume,source=cleanroom-cli-opencode-config,target=/home/dev/.config/opencode" \
-  --mount "type=volume,source=$data_volume,target=/home/dev/.local/share" \
-  --mount "type=volume,source=$state_volume,target=/home/dev/.local/state" \
-  --mount "type=volume,source=$cache_volume,target=/home/dev/.cache" \
-  --mount "type=volume,source=cleanroom-cli-gems,target=/home/dev/bundle" \
-  --mount "type=volume,source=cleanroom-cli-herdr-config,target=/home/dev/.config/herdr"
+  --mount "type=bind,source=$session/share,target=/home/dev/.local/share" \
+  --mount "type=bind,source=$session/state,target=/home/dev/.local/state" \
+  --mount "type=bind,source=$cache,target=/home/dev/.cache" \
+  --mount "type=bind,source=$session/gems,target=/home/dev/bundle" \
+  --mount "type=bind,source=$session/herdr,target=/home/dev/.config/herdr"
 
 if [ -t 0 ] && [ -t 1 ]; then
   set -- "$@" --tty
@@ -184,17 +271,17 @@ if [ -n "$env_file" ]; then
   set -- "$@" --env-file "$env_file"
 fi
 
-# Hide credential files covered by the workspace bind mount.
-if [ -f "$workspace/.env" ]; then
-  set -- "$@" --mount "type=bind,source=/dev/null,target=/workspace/.env,readonly"
+# Hide credential files covered by the context bind mount.
+if [ -f "$context/.env" ]; then
+  set -- "$@" --mount "type=bind,source=/dev/null,target=/context/.env,readonly"
 fi
 if [ -n "$env_file" ]; then
   env_dir=$(CDPATH= cd -P "$(dirname "$env_file")" >/dev/null 2>&1 && pwd)
   env_path=$env_dir/$(basename "$env_file")
   case "$env_path" in
-    "$workspace"/*)
-      if [ "$env_path" != "$workspace/.env" ]; then
-        set -- "$@" --mount "type=bind,source=/dev/null,target=/workspace/${env_path#"$workspace"/},readonly"
+    "$context"/*)
+      if [ "$env_path" != "$context/.env" ]; then
+        set -- "$@" --mount "type=bind,source=/dev/null,target=/context/${env_path#"$context"/},readonly"
       fi
       ;;
   esac

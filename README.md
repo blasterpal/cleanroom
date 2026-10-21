@@ -26,7 +26,9 @@ Cleanroom controls which host directories are mounted; **it is not a hardened
 sandbox for untrusted agents or code**, and the name does not imply a formal
 legal clean-room process.
 
-- The agent can read and write the mounted workspace and both drop folders.
+- The CLI mounts the current directory read-only at `/context`. Each name has
+  its own writable `/workspace` and `/data`. Compose uses the separate layout
+  described below.
 - Provider keys are supplied at runtime and are accessible to the agent.
 - Outbound network access is not restricted by this setup.
 - Optional CDP access connects to a host browser, including its authenticated
@@ -34,14 +36,14 @@ legal clean-room process.
 - OpenCode config and skills are shared and must contain no secrets. The provider
   config references `OPENROUTER_API_KEY` through `{env:OPENROUTER_API_KEY}`.
 - Every CLI launch requires `cleanroom --name NAME`. Each container mounts only
-  that name's auth, session state, and cache volumes. Reusing a name resumes its
-  saved state. Compose retains its existing state volumes separately. Stopping
+  that name's work, output, auth, state, and cache directories. Reusing a name
+  resumes its saved state. Compose retains its existing state volumes separately. Stopping
   a container does not clear saved state.
 
 Neither the Docker socket nor the host home directory/browser profile is
 mounted. Only supply material and credentials you intend the agent to access.
 
-## Layout
+## Checkout layout (Compose)
 
 | Path | Purpose |
 |---|---|
@@ -56,7 +58,7 @@ mounted. Only supply material and credentials you intend the agent to access.
 | `config/` | The container's global OpenCode config |
 | `vendor/` | Vendored skill snapshot (with upstream license) |
 
-## Local-only drop folders
+## Local-only drop folders (Compose)
 
 `data/` and `blind_data/` are local symlinks to directories outside the repository.
 Both paths are gitignored; do not force-add their contents or commit the
@@ -100,9 +102,10 @@ directory is not on `PATH`, add it before running `cleanroom`. If `.env` is
 missing, setup creates it from `.env.example` with owner-only permissions and
 does not overwrite an existing file. The example keys are blank; add the
 credentials you want to use. The CLI opens Bash with the current directory
-mounted read/write at `/workspace`; type `opencode` inside the container to
-start OpenCode. Run `cleanroom build` after changing the image, OpenCode config,
-or vendored skills.
+mounted read-only at `/context`. Bash starts in a separate writable
+`/workspace`; type `opencode` there to start OpenCode. Read supplied files from
+`/context` and save work in `/workspace` or `/data`. Run `cleanroom build` after
+changing the image, OpenCode config, or vendored skills.
 
 The only credential required for OpenRouter is a valid `OPENROUTER_API_KEY`.
 Export it in your shell, or put it in `.env` in the **current working directory**.
@@ -121,31 +124,61 @@ The key is supplied as a runtime environment variable. Before OpenCode starts,
 the entrypoint merges it into `~/.local/share/opencode/auth.json` (mode 0600),
 preserving other providers. No `/connect` is needed. An unset or empty key leaves
 existing auth untouched. The env file is read host-side and never mounted as a
-credential file; files covered by the workspace mount are hidden with an empty,
+credential file; files covered by the context mount are hidden with an empty,
 read-only file inside the container. Keep credential files out of Git.
 
-`cleanroom --name a` and `cleanroom --name b` use separate Docker volumes for
-OpenCode data (including auth and sessions), state, and caches. The same normalized name
-reuses those volumes across workspaces. Config, plugins, and the complete pinned
-Matt Pocock skill pack remain shared in `cleanroom-cli-opencode-config`; keep
-secrets out of that volume. Gems and Herdr config also remain shared.
+Every name has visible host directories. With the default XDG paths:
+
+| Container path | Host directory for `--name wayfinder` | Access |
+|---|---|---|
+| `/context` | The directory where you launch `cleanroom` | Read-only |
+| `/workspace` | `~/.local/share/cleanroom/wayfinder/workspace/` | Writable |
+| `/data` | `~/.local/share/cleanroom/wayfinder/data/` | Writable |
+| `/home/dev/.local/share` | `~/.local/share/cleanroom/wayfinder/share/` | Writable |
+| `/home/dev/.local/state` | `~/.local/share/cleanroom/wayfinder/state/` | Writable |
+| `/home/dev/.cache` | `~/.cache/cleanroom/wayfinder/` | Writable |
+| `/home/dev/bundle` | `~/.local/share/cleanroom/wayfinder/gems/` | Writable |
+| `/home/dev/.config/herdr` | `~/.local/share/cleanroom/wayfinder/herdr/` | Writable |
+
+Set host `XDG_DATA_HOME` or `XDG_CACHE_HOME` to change those storage bases; use
+absolute, separate paths outside synced folders. The CLI prints the host session
+directory at launch. OpenCode credentials are in `share/opencode/auth.json`;
+treat the session directory as private. New named directories have mode 0700.
+
+Put extra context into the host `data/` directory before launch, and retrieve
+outputs there afterward. Files written to `/workspace` are also visible on the
+host. Reusing a name preserves both directories and its OpenCode conversations,
+auth, state, caches, gems, and Herdr files, even when launched from a different
+context directory. A different name starts with separate work and state.
+
+Only the selected name's directories are mounted. The CLI refuses a context
+that contains Cleanroom storage or is inside it, and refuses symlinks for named
+storage directories. The parent storage directories and other names are never
+mounted. Config, plugins, and the pinned Matt Pocock skill pack remain shared in
+`cleanroom-cli-opencode-config`; keep secrets and experiment-specific settings
+out of that volume. Other files written to the container's temporary filesystem
+are discarded on exit.
 
 `--name` is required for every launch; `build`, `install`, and `--help` do not
 require it. Spaces and dashes become underscores. Other special characters are
 removed; letters, digits, and underscores are preserved, including letter case.
 Quote names containing spaces: `cleanroom --name "Login fix-v2!"` uses
 `Login_fix_v2`. Names that become empty are rejected. Names that normalize to the
-same value reuse the same state. Existing `cleanroom-cli-seat-<name>-...` volumes
-are reused when `<name>` matches the normalized name; no volumes are moved or
-deleted.
+same value reuse the same state.
+
+On first launch with the new storage layout, existing
+`cleanroom-cli-seat-<name>-opencode-data`, `...-opencode-state`, and `...-cache`
+volumes are imported into the corresponding host directories if those directories
+do not yet exist. Stop older containers using that name before importing. The
+old volumes remain untouched; existing host directories always take precedence.
+Previously shared gems and Herdr config are not imported into individual names.
 
 For an explicit env file, use `cleanroom --name a --env-file /path/to/credentials.env`
 or set `CLEANROOM_ENV_FILE`. These select runtime variables and do not change
-the shared config or skills. The current workspace is the only host directory
-mounted by the CLI. Run `cleanroom build` after changing the image, OpenCode
-config, or vendored skills.
+the shared config or skills. Run `cleanroom build` after changing the image,
+OpenCode config, or vendored skills.
 
-### With 1Password
+### Compose stack with 1Password
 
 Install the `op` CLI and enable the desktop app's CLI integration (Settings →
 Developer → "Integrate with 1Password CLI"). Set your own secret reference:
@@ -172,7 +205,7 @@ The startup auth entry and the container's global
 injected `OPENROUTER_API_KEY`. No interactive login is needed. Choose a model
 with OpenCode's `/models`; none is hardcoded.
 
-### Without 1Password
+### Compose stack without 1Password
 
 ```sh
 cp .env.example .env
@@ -228,12 +261,17 @@ the host browser or expose its CDP port.
 
 ## Persistence and stopping
 
-Sessions, caches, gems and Herdr state persist in Docker named volumes outside
-any synced folder. The existing Postgres data volume is also retained, but the
-current Compose configuration does not mount it. `docker compose down` stops the
-stack and keeps its volumes; `docker compose down -v` deletes the volumes declared
-in the current Compose configuration. No Docker socket, host home directory, or
-browser profile is mounted.
+CLI work, outputs, and OpenCode state persist in the host directories above.
+Exiting removes the container and keeps these files. Reopen them with the same
+`--name`. Shared OpenCode config remains in a Docker volume. Back up workspace
+and output files as needed; include `share/` and `state/` only in private backups
+because they contain credentials and conversations. Caches can be recreated.
+
+The Compose stack retains its existing Docker volumes and bind mounts. Its
+Postgres data volume is retained but is not currently mounted. `docker compose down` stops that stack and keeps its volumes; `docker compose down -v` deletes
+volumes declared in the Compose configuration. These commands do not delete the
+CLI's named host directories. No Docker socket, host home directory, or browser
+profile is mounted.
 
 ## Before publishing your own checkout
 
