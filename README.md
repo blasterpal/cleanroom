@@ -31,8 +31,12 @@ legal clean-room process.
 - Outbound network access is not restricted by this setup.
 - Optional CDP access connects to a host browser, including its authenticated
   websites. Use a dedicated browser profile if that access is inappropriate.
-- Agent state persists between sessions. Stopping a container does not reset
-  its context, stored credentials, or database.
+- OpenCode config and skills are shared and must contain no secrets. The provider
+  config references `OPENROUTER_API_KEY` through `{env:OPENROUTER_API_KEY}`.
+- Every CLI launch requires `cleanroom --name NAME`. Each container mounts only
+  that name's auth, session state, and cache volumes. Reusing a name resumes its
+  saved state. Compose retains its existing state volumes separately. Stopping
+  a container does not clear saved state.
 
 Neither the Docker socket nor the host home directory/browser profile is
 mounted. Only supply material and credentials you intend the agent to access.
@@ -88,20 +92,58 @@ With Docker Desktop running, run setup once from this checkout:
 ```sh
 ./setup.sh
 cd /path/to/workspace
-cleanroom
+cleanroom --name my_project
 ```
 
 `setup.sh` installs the command in `~/.local/bin` and builds the image. If that
-directory is not on `PATH`, add it before running `cleanroom`. The CLI opens
-Bash with the current directory mounted read/write at `/workspace`; type
-`opencode` inside the container to start OpenCode. Run `cleanroom build` after
-changing the image, OpenCode config, or vendored skills.
+directory is not on `PATH`, add it before running `cleanroom`. If `.env` is
+missing, setup creates it from `.env.example` with owner-only permissions and
+does not overwrite an existing file. The example keys are blank; add the
+credentials you want to use. The CLI opens Bash with the current directory
+mounted read/write at `/workspace`; type `opencode` inside the container to
+start OpenCode. Run `cleanroom build` after changing the image, OpenCode config,
+or vendored skills.
 
-OpenCode config and the complete pinned Matt Pocock skill pack are seeded into
-persistent Docker volumes. The CLI also keeps OpenCode state, caches, gems, and
-Herdr config in volumes shared across workspaces. If this checkout has a `.env`,
-its runtime variables are passed to the container, but the file is not mounted.
-The current workspace is the only host directory mounted by the CLI.
+The only credential required for OpenRouter is a valid `OPENROUTER_API_KEY`.
+Export it in your shell, or put it in `.env` in the **current working directory**.
+A nonempty shell value takes precedence. The CLI no longer falls back to the
+Cleanroom checkout's `.env` when you run it from another directory.
+
+```sh
+cd /path/to/workspace
+# Set OPENROUTER_API_KEY in this directory's .env, then:
+cleanroom --name a
+# Inside the container:
+opencode
+```
+
+The key is supplied as a runtime environment variable. Before OpenCode starts,
+the entrypoint merges it into `~/.local/share/opencode/auth.json` (mode 0600),
+preserving other providers. No `/connect` is needed. An unset or empty key leaves
+existing auth untouched. The env file is read host-side and never mounted as a
+credential file; files covered by the workspace mount are hidden with an empty,
+read-only file inside the container. Keep credential files out of Git.
+
+`cleanroom --name a` and `cleanroom --name b` use separate Docker volumes for
+OpenCode data (including auth and sessions), state, and caches. The same normalized name
+reuses those volumes across workspaces. Config, plugins, and the complete pinned
+Matt Pocock skill pack remain shared in `cleanroom-cli-opencode-config`; keep
+secrets out of that volume. Gems and Herdr config also remain shared.
+
+`--name` is required for every launch; `build`, `install`, and `--help` do not
+require it. Spaces and dashes become underscores. Other special characters are
+removed; letters, digits, and underscores are preserved, including letter case.
+Quote names containing spaces: `cleanroom --name "Login fix-v2!"` uses
+`Login_fix_v2`. Names that become empty are rejected. Names that normalize to the
+same value reuse the same state. Existing `cleanroom-cli-seat-<name>-...` volumes
+are reused when `<name>` matches the normalized name; no volumes are moved or
+deleted.
+
+For an explicit env file, use `cleanroom --name a --env-file /path/to/credentials.env`
+or set `CLEANROOM_ENV_FILE`. These select runtime variables and do not change
+the shared config or skills. The current workspace is the only host directory
+mounted by the CLI. Run `cleanroom build` after changing the image, OpenCode
+config, or vendored skills.
 
 ### With 1Password
 
@@ -117,17 +159,18 @@ docker compose build
 ```
 
 `scripts/up` reads the OpenRouter key from 1Password using the `op://` reference
-in `OPENROUTER_OP_REF` (for example `op://Vault/Item/field`), writes it into the
-gitignored `.env` (mode 0600), and runs `docker compose up -d`. It requires the
+in `OPENROUTER_OP_REF` (for example `op://Vault/Item/field`), exports it as
+`OPENROUTER_API_KEY`, and runs `docker compose up -d`. It does not write the key
+to `.env`; it creates a mode 0600 template if needed. It requires the
 1Password desktop app's CLI integration (Settings → Developer → "Integrate with
 1Password CLI"). The key is cached for one hour (`OPENROUTER_KEY_CACHE`,
 `OPENROUTER_KEY_CACHE_TTL`). Fill `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` by hand
 to use those providers.
 
-Keys reach OpenCode through the container's global
-`~/.config/opencode/opencode.json` (from `config/opencode.json`), which reads
-`OPENROUTER_API_KEY` from the injected environment — no interactive login
-needed. Choose a model with OpenCode's `/models`; none is hardcoded.
+The startup auth entry and the container's global
+`~/.config/opencode/opencode.json` (from `config/opencode.json`) both use the
+injected `OPENROUTER_API_KEY`. No interactive login is needed. Choose a model
+with OpenCode's `/models`; none is hardcoded.
 
 ### Without 1Password
 

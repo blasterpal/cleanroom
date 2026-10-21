@@ -24,9 +24,8 @@ if [ -z "$key" ]; then
     echo "1Password CLI (op) is not installed and the key cache is empty/stale." >&2
     exit 1
   fi
-  if ! key=$(op read "$OP_REF" 2>&1); then
+  if ! key=$(op read "$OP_REF" 2>/dev/null); then
     echo "Could not read '$OP_REF' from 1Password:" >&2
-    echo "  $key" >&2
     echo "Run 'op read \"$OP_REF\"' in a terminal to authorize (Touch ID), then retry." >&2
     echo "Override the reference with OPENROUTER_OP_REF if needed." >&2
     exit 1
@@ -39,15 +38,12 @@ if [ -z "$key" ]; then
   echo "Key cached at $CACHE (valid ${CACHE_TTL}s)."
 fi
 
-# Create .env from the template if missing, then set/replace the OpenRouter line.
+# Compose reads other settings from .env; the key is injected only at runtime.
 if [ ! -f .env ]; then
-  cp .env.example .env
+  (umask 177; cp .env.example .env)
 fi
-tmp=.env.tmp.$$
-sed "s|^OPENROUTER_API_KEY=.*|OPENROUTER_API_KEY=$key|" .env >"$tmp"
-grep -q '^OPENROUTER_API_KEY=' "$tmp" || printf 'OPENROUTER_API_KEY=%s\n' "$key" >>"$tmp"
-chmod 600 "$tmp"
-mv "$tmp" .env
+OPENROUTER_API_KEY=$key
+export OPENROUTER_API_KEY
 
 docker compose up -d "$@"
 echo "cleanroom is up. OpenRouter key injected from 1Password ($OP_REF)."

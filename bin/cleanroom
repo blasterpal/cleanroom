@@ -21,12 +21,17 @@ IMAGE=${CLEANROOM_IMAGE:-cleanroom:local}
 usage() {
   cat <<'EOF'
 Usage:
-  cleanroom          Open Bash with the current directory mounted at /workspace
+  cleanroom --name NAME  Open Bash with isolated auth and sessions for this name
+  cleanroom --name NAME --env-file FILE  Use a local env file for credentials
   cleanroom build    Build or refresh the Cleanroom image
   cleanroom install  Install the cleanroom command in ~/.local/bin
   cleanroom --help   Show this help
 
+A name is required to launch. Reuse it to resume the same state.
+Spaces and dashes become underscores; other special characters are removed.
 Set CLEANROOM_IMAGE to override the Docker image tag.
+By default, cleanroom uses .env in the current directory when it exists.
+OPENROUTER_API_KEY in the shell takes precedence over the env file.
 EOF
 }
 
@@ -77,12 +82,74 @@ case "${1:-}" in
     usage
     exit 0
     ;;
+  --env-file|--env-file=*|--name|--name=*) ;;
   "") ;;
   *)
     usage >&2
     exit 2
     ;;
 esac
+
+workspace=$(pwd -P)
+name=
+env_file=${CLEANROOM_ENV_FILE:-}
+if [ -z "$env_file" ] && [ -f "$workspace/.env" ]; then
+  env_file=$workspace/.env
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --name)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--name requires a name." >&2
+        exit 2
+      fi
+      name=$2
+      shift 2
+      ;;
+    --name=*)
+      name=${1#--name=}
+      [ -n "$name" ] || { echo "--name requires a name." >&2; exit 2; }
+      shift
+      ;;
+    --env-file)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--env-file requires a path." >&2
+        exit 2
+      fi
+      env_file=$2
+      shift 2
+      ;;
+    --env-file=*)
+      env_file=${1#--env-file=}
+      [ -n "$env_file" ] || { echo "--env-file requires a path." >&2; exit 2; }
+      shift
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -n "$env_file" ] && { [ ! -f "$env_file" ] || [ ! -r "$env_file" ]; }; then
+  echo "Cannot read env file: $env_file" >&2
+  exit 1
+fi
+
+if [ -z "$name" ]; then
+  echo "--name is required. Reuse a name to resume its saved state." >&2
+  exit 2
+fi
+normalized_name=$(printf '%s' "$name" | LC_ALL=C tr '[:space:]-' '_' | LC_ALL=C tr -cd 'A-Za-z0-9_')
+if [ -z "$normalized_name" ]; then
+  echo "The name is empty after removing special characters." >&2
+  exit 2
+fi
+if [ "$name" != "$normalized_name" ]; then
+  printf 'Using cleanroom name: %s\n' "$normalized_name" >&2
+fi
+name=$normalized_name
 
 docker info >/dev/null 2>&1 || {
   echo "Docker is not running. Start Docker Desktop and retry." >&2
@@ -94,14 +161,18 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   build_image
 fi
 
-workspace=$(pwd -P)
+# Keep the existing volume names so saved state remains available.
+data_volume=cleanroom-cli-seat-$name-opencode-data
+state_volume=cleanroom-cli-seat-$name-opencode-state
+cache_volume=cleanroom-cli-seat-$name-cache
+
 set -- docker run --rm --init --interactive \
   --workdir /workspace \
   --mount "type=bind,source=$workspace,target=/workspace" \
   --mount "type=volume,source=cleanroom-cli-opencode-config,target=/home/dev/.config/opencode" \
-  --mount "type=volume,source=cleanroom-cli-opencode-data,target=/home/dev/.local/share" \
-  --mount "type=volume,source=cleanroom-cli-opencode-state,target=/home/dev/.local/state" \
-  --mount "type=volume,source=cleanroom-cli-cache,target=/home/dev/.cache" \
+  --mount "type=volume,source=$data_volume,target=/home/dev/.local/share" \
+  --mount "type=volume,source=$state_volume,target=/home/dev/.local/state" \
+  --mount "type=volume,source=$cache_volume,target=/home/dev/.cache" \
   --mount "type=volume,source=cleanroom-cli-gems,target=/home/dev/bundle" \
   --mount "type=volume,source=cleanroom-cli-herdr-config,target=/home/dev/.config/herdr"
 
@@ -109,8 +180,29 @@ if [ -t 0 ] && [ -t 1 ]; then
   set -- "$@" --tty
 fi
 
-if [ -f "$ROOT/.env" ]; then
-  set -- "$@" --env-file "$ROOT/.env"
+if [ -n "$env_file" ]; then
+  set -- "$@" --env-file "$env_file"
 fi
+
+# Hide credential files covered by the workspace bind mount.
+if [ -f "$workspace/.env" ]; then
+  set -- "$@" --mount "type=bind,source=/dev/null,target=/workspace/.env,readonly"
+fi
+if [ -n "$env_file" ]; then
+  env_dir=$(CDPATH= cd -P "$(dirname "$env_file")" >/dev/null 2>&1 && pwd)
+  env_path=$env_dir/$(basename "$env_file")
+  case "$env_path" in
+    "$workspace"/*)
+      if [ "$env_path" != "$workspace/.env" ]; then
+        set -- "$@" --mount "type=bind,source=/dev/null,target=/workspace/${env_path#"$workspace"/},readonly"
+      fi
+      ;;
+  esac
+fi
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  set -- "$@" --env OPENROUTER_API_KEY
+fi
+set -- "$@" --env XDG_DATA_HOME=/home/dev/.local/share \
+  --env XDG_STATE_HOME=/home/dev/.local/state --env XDG_CACHE_HOME=/home/dev/.cache
 
 exec "$@" "$IMAGE" bash

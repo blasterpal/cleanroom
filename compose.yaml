@@ -8,6 +8,7 @@ services:
     env_file:
       - .env
     environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       BRAVE_CDP_URL: ${BRAVE_CDP_URL:-http://host.docker.internal:9222}
       HERDR_BROWSER_CDP_URL: ${BRAVE_CDP_URL:-http://host.docker.internal:9222}
       OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true"
