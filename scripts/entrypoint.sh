@@ -3,11 +3,17 @@
 # baked-in OpenCode config, skills and plugins — without overwriting anything
 # already there, so in-container settings persist across rebuilds.
 set -eu
-seed=/opt/cleanroom/seed/opencode
+seed=${CLEANROOM_SEED_DIR:-/opt/cleanroom/seed/opencode}
 cfg="${HOME}/.config/opencode"
 if [ -d "$seed" ]; then
   mkdir -p "$cfg"
-  cp -an "$seed/." "$cfg/" 2>/dev/null || true
+  if [ -n "${CLEANROOM_NO_SKILLS:-}" ]; then
+    # Seed everything except the skills directory, so a no-skills launch does
+    # not repopulate the skills the launcher hid for this container.
+    find "$seed" -mindepth 1 -maxdepth 1 ! -name skills -exec cp -an {} "$cfg/" \; 2>/dev/null || true
+  else
+    cp -an "$seed/." "$cfg/" 2>/dev/null || true
+  fi
 fi
 if [ -n "${OPENROUTER_API_KEY:-}" ]; then
   # Read the key from the environment so it never appears in process arguments.

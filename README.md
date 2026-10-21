@@ -178,6 +178,13 @@ or set `CLEANROOM_ENV_FILE`. These select runtime variables and do not change
 the shared config or skills. Run `cleanroom build` after changing the image,
 OpenCode config, or vendored skills.
 
+For a launch without the shared skill pack, add `--no-skills` (or set
+`CLEANROOM_NO_SKILLS`). The shared volume's skills directory is hidden for that
+launch only, and the entrypoint does not seed skills at startup. The shared
+configuration is not changed, and other launches still load the skills. Use it
+when a run must start from the supplied context alone, with no ambient skills.
+Inside the container, `opencode debug skill` shows an empty list.
+
 ### Compose stack with 1Password
 
 Install the `op` CLI and enable the desktop app's CLI integration (Settings →
