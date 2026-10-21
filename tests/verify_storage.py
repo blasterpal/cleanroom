@@ -27,8 +27,8 @@ class StorageTests(unittest.TestCase):
         self.env['XDG_CACHE_HOME'] = str(self.base / 'cache')
         self.name = 'verify_' + uuid.uuid4().hex[:12]
 
-    def cli(self, name, commands):
-        result = subprocess.run([str(ROOT / 'bin/cleanroom'), '--name', name],
+    def cli(self, name, commands, extra_args=()):
+        result = subprocess.run([str(ROOT / 'bin/cleanroom'), '--name', name, *extra_args],
                                 cwd=self.context, env=self.env,
                                 input='set -eu\n' + commands + '\n', text=True,
                                 capture_output=True, timeout=60)
@@ -72,6 +72,18 @@ test ! -e /data/result.txt
 test ! -e /data/extra-context.txt
 test ! -e "$XDG_CACHE_HOME/marker"
 test ! -e "$XDG_STATE_HOME/marker"
+""")
+
+    def test_no_skills_hides_shared_skills_for_one_launch(self):
+        self.cli(self.name, """
+test -n "$(ls -A /home/dev/.config/opencode/skills)"
+""")
+        self.cli(self.name, """
+test -z "$(ls -A /home/dev/.config/opencode/skills)"
+opencode debug skill | python3 -c "import json, sys; assert json.load(sys.stdin) == []"
+""", extra_args=('--no-skills',))
+        self.cli(self.name, """
+test -n "$(ls -A /home/dev/.config/opencode/skills)"
 """)
 
     def test_legacy_volumes_are_imported_once_and_retained(self):

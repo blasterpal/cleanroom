@@ -15,3 +15,6 @@ app/vendor/bundle/
 
 # OS noise
 .DS_Store
+
+# Python test artifacts
+__pycache__/

@@ -23,6 +23,7 @@ usage() {
 Usage:
   cleanroom --name NAME  Open Bash with separate work and state for this name
   cleanroom --name NAME --env-file FILE  Use a local env file for credentials
+  cleanroom --name NAME --no-skills  Open Bash without the shared OpenCode skills
   cleanroom build    Build or refresh the Cleanroom image
   cleanroom install  Install the cleanroom command in ~/.local/bin
   cleanroom --help   Show this help
@@ -35,6 +36,9 @@ Spaces and dashes become underscores; other special characters are removed.
 Set CLEANROOM_IMAGE to override the Docker image tag.
 By default, cleanroom uses .env in the current directory when it exists.
 OPENROUTER_API_KEY in the shell takes precedence over the env file.
+With --no-skills, or CLEANROOM_NO_SKILLS set in the environment, the shared
+OpenCode skills are hidden for that launch only and are not seeded at startup.
+The shared configuration is not changed; other launches still load the skills.
 EOF
 }
 
@@ -85,7 +89,7 @@ case "${1:-}" in
     usage
     exit 0
     ;;
-  --env-file|--env-file=*|--name|--name=*) ;;
+  --env-file|--env-file=*|--name|--name=*|--no-skills) ;;
   "") ;;
   *)
     usage >&2
@@ -95,6 +99,7 @@ esac
 
 context=$(pwd -P)
 name=
+no_skills=${CLEANROOM_NO_SKILLS:-}
 env_file=${CLEANROOM_ENV_FILE:-}
 if [ -z "$env_file" ] && [ -f "$context/.env" ]; then
   env_file=$context/.env
@@ -126,6 +131,10 @@ while [ "$#" -gt 0 ]; do
     --env-file=*)
       env_file=${1#--env-file=}
       [ -n "$env_file" ] || { echo "--env-file requires a path." >&2; exit 2; }
+      shift
+      ;;
+    --no-skills)
+      no_skills=1
       shift
       ;;
     *)
@@ -250,6 +259,9 @@ prepare_directory "$session/gems"
 prepare_directory "$session/herdr"
 printf 'Cleanroom files: %s\n' "$session" >&2
 printf '%s\n' 'Context is read-only at /context; save work in /workspace or /data.' >&2
+if [ -n "$no_skills" ]; then
+  printf '%s\n' 'Skills are disabled for this launch; the shared configuration is unchanged.' >&2
+fi
 
 set -- docker run --rm --init --interactive \
   --workdir /workspace \
@@ -288,6 +300,12 @@ if [ -n "$env_file" ]; then
 fi
 if [ -n "${OPENROUTER_API_KEY:-}" ]; then
   set -- "$@" --env OPENROUTER_API_KEY
+fi
+if [ -n "$no_skills" ]; then
+  # Hide the shared volume's skills for this container only, and tell the
+  # entrypoint not to seed them back at startup. The volume is not modified.
+  set -- "$@" --mount "type=tmpfs,target=/home/dev/.config/opencode/skills" \
+    --env CLEANROOM_NO_SKILLS=1
 fi
 set -- "$@" --env XDG_DATA_HOME=/home/dev/.local/share \
   --env XDG_STATE_HOME=/home/dev/.local/state --env XDG_CACHE_HOME=/home/dev/.cache
